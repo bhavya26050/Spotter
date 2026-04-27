@@ -323,13 +323,14 @@ def coordinate_payload(label: str, coordinate: Coordinate) -> dict:
 
 
 def build_route_nodes(route_coordinates: list[tuple[float, float]], stations: Iterable[FuelStation]) -> list[RouteNode]:
-    cumulative_miles = cumulative_route_miles(route_coordinates)
+    simplified_route_coordinates = simplify_route_coordinates(route_coordinates, target_spacing_miles=15.0)
+    cumulative_miles = cumulative_route_miles(simplified_route_coordinates)
     nodes = [
         RouteNode(
             node_id="start",
             node_type="start",
             label="Trip start",
-            coordinate=Coordinate(latitude=route_coordinates[0][1], longitude=route_coordinates[0][0]),
+            coordinate=Coordinate(latitude=simplified_route_coordinates[0][1], longitude=simplified_route_coordinates[0][0]),
             route_position_miles=0.0,
             price_per_gallon=0.0,
             distance_from_route_miles=0.0,
@@ -338,7 +339,7 @@ def build_route_nodes(route_coordinates: list[tuple[float, float]], stations: It
 
     for station in stations:
         route_position, distance_from_route = nearest_route_position(
-            route_coordinates=route_coordinates,
+            route_coordinates=simplified_route_coordinates,
             cumulative_miles=cumulative_miles,
             station=station,
         )
@@ -360,6 +361,28 @@ def build_route_nodes(route_coordinates: list[tuple[float, float]], stations: It
 
     nodes = sorted(nodes, key=lambda node: (node.route_position_miles, node.node_type != "start"))
     return deduplicate_nodes(nodes)
+
+
+def simplify_route_coordinates(
+    route_coordinates: list[tuple[float, float]],
+    target_spacing_miles: float = 15.0,
+) -> list[tuple[float, float]]:
+    if len(route_coordinates) <= 2:
+        return route_coordinates
+
+    cumulative_miles = cumulative_route_miles(route_coordinates)
+    simplified = [route_coordinates[0]]
+    last_kept_index = 0
+
+    for index in range(1, len(route_coordinates) - 1):
+        if cumulative_miles[index] - cumulative_miles[last_kept_index] >= target_spacing_miles:
+            simplified.append(route_coordinates[index])
+            last_kept_index = index
+
+    if simplified[-1] != route_coordinates[-1]:
+        simplified.append(route_coordinates[-1])
+
+    return simplified
 
 
 def cumulative_route_miles(route_coordinates: list[tuple[float, float]]) -> list[float]:

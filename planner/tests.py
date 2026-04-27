@@ -1,4 +1,5 @@
 from unittest.mock import patch
+import time
 
 from django.test import RequestFactory, SimpleTestCase
 
@@ -7,6 +8,7 @@ from .services import (
     FuelStation,
     RouteNode,
     cumulative_route_miles,
+    build_route_nodes,
     nearest_route_position,
     project_onto_segment,
     solve_fuel_path,
@@ -130,3 +132,31 @@ class RoutePlanViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertJSONEqual(response.content, {"ok": True})
+
+
+class RoutePerformanceTests(SimpleTestCase):
+    def test_build_route_nodes_runs_quickly_for_short_route(self):
+        route = [
+            (index * 0.05, index * 0.03)
+            for index in range(300)
+        ]
+        stations = [
+            FuelStation(
+                station_id=str(index),
+                name=f"Station {index}",
+                address="",
+                city="Test City",
+                state="TS",
+                latitude=index * 0.03,
+                longitude=index * 0.05,
+                price_per_gallon=3.5 + (index % 5) * 0.01,
+            )
+            for index in range(200)
+        ]
+
+        start_time = time.perf_counter()
+        nodes = build_route_nodes(route, stations)
+        elapsed = time.perf_counter() - start_time
+
+        self.assertLess(elapsed, 5.0)
+        self.assertGreater(len(nodes), 2)
