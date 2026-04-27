@@ -1,13 +1,36 @@
 # Route Fuel Planner
 
-A Django API that accepts a US start and finish location, fetches a route from OpenStreetMap's public OSRM service, and computes cost-aware refueling stops using a local fuel-price CSV.
+Fuel-aware routing for US road trips. Send a start and finish location, get back the route geometry, the cheapest practical fuel stops along the way, and the estimated total fuel spend.
 
-## What it uses
+## What it does
 
-- Django for the API
-- Nominatim for geocoding free-form US locations
+- Resolves US start and finish locations
+- Fetches a road route from free public map/routing services
+- Projects fuel stations onto the route
+- Chooses cost-effective stops under a 500 mile range limit
+- Returns the route as GeoJSON plus a full fuel-cost breakdown
+
+## Tech Stack
+
+- Django 5.2
+- Nominatim for geocoding
 - OSRM for routing and route geometry
-- A CSV fuel-price file stored at `data/fuel_prices.csv`
+- Local CSV fuel-price dataset at `data/fuel_prices.csv`
+
+## API Flow
+
+```mermaid
+flowchart LR
+    A[Client / Postman] --> B[POST /api/route-plan/]
+    B --> C[Geocode start with Nominatim]
+    B --> D[Geocode finish with Nominatim]
+    C --> E[Fetch route from OSRM]
+    D --> E
+    E --> F[Load local fuel-price CSV]
+    F --> G[Project stations onto route]
+    G --> H[Optimize fuel stops locally]
+    H --> I[Return GeoJSON + fuel plan + total cost]
+```
 
 ## Endpoint
 
@@ -22,18 +45,17 @@ Example request:
 }
 ```
 
-Example response fields:
+Example response highlights:
 
-- `route.map.geometry` contains the route as GeoJSON
-- `fuel_plan` lists each chosen fuel stop and the gallons/cost for the next leg
-- `summary.total_fuel_cost` returns the total trip fuel spend
+- `route.map.geometry` contains the trip as GeoJSON `LineString`
+- `fuel_plan` lists each chosen stop and the next leg it funds
+- `summary.total_fuel_cost` shows the total trip fuel spend
 
-## Run locally
-
-### Install and start
+## Quick Start
 
 ```bash
 pip install -r requirements.txt
+python manage.py migrate
 python manage.py check
 python manage.py test
 python manage.py runserver
@@ -41,20 +63,18 @@ python manage.py runserver
 
 The API will be available at `http://localhost:8000/api/route-plan/`.
 
-### Demo with Postman
+## Try It in Postman
 
 1. Open Postman
 2. Click **Import** and select `Route_Fuel_Planner_API.postman_collection.json`
-3. Use the included requests to test:
-   - **LA to New York** — 2800+ mile cross-country route with 5–6 stops
-   - **San Francisco to Las Vegas** — 570 mile route with 1–2 stops
-   - **Phoenix to Denver** — 600 mile mountain route
-   - **Chicago to Boston** — 900 mile Midwest-to-Northeast route
-   - **Coordinates format** — Same LA-to-NYC using lat,lon instead of city names
+3. Send one of the included requests:
+   - **LA to New York** — long cross-country route with multiple stops
+   - **San Francisco to Las Vegas** — shorter route with one or two stops
+   - **Phoenix to Denver** — mountain corridor example
+   - **Chicago to Boston** — Midwest-to-Northeast example
+   - **Coordinates format** — same route using `lat,lon` input
 
-Each request returns the route geometry (GeoJSON), chosen fuel stops, gallons needed, costs per stop, and total trip fuel spend.
-
-## Response structure
+## Response Shape
 
 ```json
 {
@@ -79,7 +99,7 @@ Each request returns the route geometry (GeoJSON), chosen fuel stops, gallons ne
       "type": "Feature",
       "geometry": {
         "type": "LineString",
-        "coordinates": [[-118.243683, 34.052235], ...]
+        "coordinates": [[-118.243683, 34.052235], [..]]
       }
     }
   },
@@ -104,7 +124,7 @@ Each request returns the route geometry (GeoJSON), chosen fuel stops, gallons ne
     }
   ],
   "summary": {
-    "total_fuel_cost": 847.50,
+    "total_fuel_cost": 847.5,
     "gallons_purchased": 279.75,
     "tank_range_miles": 500,
     "fuel_efficiency_mpg": 10,
@@ -113,14 +133,22 @@ Each request returns the route geometry (GeoJSON), chosen fuel stops, gallons ne
 }
 ```
 
+## Project Structure
+
+- `planner/services.py` contains geocoding, routing, station matching, and fuel optimization
+- `planner/views.py` exposes the API endpoint
+- `planner/tests.py` covers the planner logic and the view
+- `demo_api.py` demonstrates the API from the terminal
+- `Route_Fuel_Planner_API.postman_collection.json` is ready for import into Postman
+
 ## Notes
 
-- The vehicle is modeled as starting with a full tank and a 500 mile maximum range.
+- The vehicle starts with a full tank and a 500 mile maximum range.
 - Fuel efficiency is fixed at 10 mpg.
-- The API makes only **one geocoding call per endpoint** (start and finish) and **one routing call** for the trip.
-- Fuel stops are selected from the provided CSV and projected onto the route polyline using Haversine distance.
-- The cost optimizer uses a forward shortest-path search to minimize fuel spend subject to the 500-mile range constraint.
-- If you have the exercise's attached fuel-price file, replace `data/fuel_prices.csv` with that file using these columns:
+- The API makes one geocoding call per endpoint side and one routing call for the trip.
+- Fuel stops are selected from the CSV and projected onto the route polyline using Haversine distance.
+- The optimizer uses a forward shortest-path search to minimize fuel spend under the range constraint.
+- If you have the exercise's attached fuel-price file, replace `data/fuel_prices.csv` with it using these columns:
   - `station_id`
   - `name`
   - `city`
