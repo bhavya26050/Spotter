@@ -1,17 +1,6 @@
 # Route Fuel Planner
 
 Fuel-aware routing for US road trips. Send a start and finish location, get back the route geometry, the cheapest practical fuel stops along the way, and the estimated total fuel spend.
-
-## What it does
-
-- Resolves US start and finish locations
-- Fetches a road route from free public map/routing services
-- Projects fuel stations onto the route
-- Chooses cost-effective stops under a 500 mile range limit
-- Returns the route as GeoJSON plus a full fuel-cost breakdown
-
-## Tech Stack
-
 - Django 5.2
 - Nominatim for geocoding
 - OSRM for routing and route geometry
@@ -19,26 +8,15 @@ Fuel-aware routing for US road trips. Send a start and finish location, get back
 
 ## API Flow
 
-```mermaid
-flowchart LR
     A[Client / Postman] --> B[POST /api/route-plan/]
     B --> C[Geocode start with Nominatim]
     B --> D[Geocode finish with Nominatim]
-    C --> E[Fetch route from OSRM]
-    D --> E
-    E --> F[Load local fuel-price CSV]
-    F --> G[Project stations onto route]
-    G --> H[Optimize fuel stops locally]
-    H --> I[Return GeoJSON + fuel plan + total cost]
-```
 
 ## Endpoint
 
 `POST /api/route-plan/`
-
 Example request:
 
-```json
 {
   "start": "Los Angeles, CA",
   "finish": "New York, NY"
@@ -148,7 +126,7 @@ The API will be available at `http://localhost:8000/api/route-plan/`.
 - The API makes one geocoding call per endpoint side and one routing call for the trip.
 - Fuel stops are selected from the CSV and projected onto the route polyline using Haversine distance.
 - The optimizer uses a forward shortest-path search to minimize fuel spend under the range constraint.
-- If you have the exercise's attached fuel-price file, replace `data/fuel_prices.csv` with it using these columns:
+- The app is wired to `data/fuel-prices-for-be-assessment.csv` and expects these columns:
   - `station_id`
   - `name`
   - `city`

@@ -11,6 +11,8 @@ from typing import Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import geonamescache
+
 from django.conf import settings
 
 
@@ -28,6 +30,7 @@ class Coordinate:
 class FuelStation:
     station_id: str
     name: str
+    address: str
     city: str
     state: str
     latitude: float
@@ -47,6 +50,25 @@ class RouteNode:
 
 
 _COORDINATE_PATTERN = re.compile(r"^\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\s*$")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+CANADIAN_PROVINCE_ALIASES = {
+    "ab": "01",
+    "bc": "02",
+    "mb": "03",
+    "nb": "04",
+    "nl": "05",
+    "ns": "07",
+    "nt": "13",
+    "nu": "14",
+    "on": "08",
+    "pe": "09",
+    "qc": "10",
+    "sk": "11",
+    "yt": "12",
+}
+
+CANADIAN_ADMIN1_TO_PROVINCE = {admin1: province for province, admin1 in CANADIAN_PROVINCE_ALIASES.items()}
 
 
 def plan_route(start: str, finish: str) -> dict:
@@ -134,10 +156,10 @@ def load_fuel_stations() -> tuple[FuelStation, ...]:
             f"Fuel price file not found at {path}. Provide a CSV with station metadata and prices."
         )
 
-    stations: list[FuelStation] = []
+    grouped_rows: dict[tuple[str, str, str, str, str], dict[str, str | float]] = {}
     with path.open(newline="", encoding="utf-8") as file_handle:
         reader = csv.DictReader(file_handle)
-        required_fields = {"station_id", "name", "city", "state", "latitude", "longitude", "price_per_gallon"}
+        required_fields = {"OPIS Truckstop ID", "Truckstop Name", "Address", "City", "State", "Rack ID", "Retail Price"}
         missing_fields = required_fields - set(reader.fieldnames or [])
         if missing_fields:
             raise RoutePlanningError(
@@ -145,22 +167,125 @@ def load_fuel_stations() -> tuple[FuelStation, ...]:
             )
 
         for row in reader:
-            stations.append(
-                FuelStation(
-                    station_id=row["station_id"].strip(),
-                    name=row["name"].strip(),
-                    city=row["city"].strip(),
-                    state=row["state"].strip(),
-                    latitude=float(row["latitude"]),
-                    longitude=float(row["longitude"]),
-                    price_per_gallon=float(row["price_per_gallon"]),
-                )
-            )
+            station_id = row["OPIS Truckstop ID"].strip()
+            name = normalize_text_field(row["Truckstop Name"])
+            address = normalize_text_field(row["Address"])
+            city = normalize_text_field(row["City"])
+            state = normalize_text_field(row["State"]).upper()
+            price_per_gallon = float(row["Retail Price"])
 
-    if not stations:
+            key = (station_id, name, address, city, state)
+            existing = grouped_rows.get(key)
+            if existing is None or price_per_gallon < float(existing["price_per_gallon"]):
+                grouped_rows[key] = {
+                    "station_id": station_id,
+                    "name": name,
+                    "address": address,
+                    "city": city,
+                    "state": state,
+                    "price_per_gallon": price_per_gallon,
+                }
+
+    if not grouped_rows:
         raise RoutePlanningError("Fuel price CSV did not contain any usable rows.")
 
+    stations: list[FuelStation] = []
+    for record in grouped_rows.values():
+        coordinate = resolve_station_coordinate(
+            city=str(record["city"]),
+            state=str(record["state"]),
+            address=str(record["address"]),
+            station_name=str(record["name"]),
+        )
+        stations.append(
+            FuelStation(
+                station_id=str(record["station_id"]),
+                name=str(record["name"]),
+                address=str(record["address"]),
+                city=str(record["city"]),
+                state=str(record["state"]),
+                latitude=coordinate.latitude,
+                longitude=coordinate.longitude,
+                price_per_gallon=float(record["price_per_gallon"]),
+            )
+        )
+
     return tuple(stations)
+
+
+@lru_cache(maxsize=1)
+def build_city_lookup() -> dict[tuple[str, str], Coordinate]:
+    cache = geonamescache.GeonamesCache()
+    city_index: dict[tuple[str, str], tuple[int, Coordinate]] = {}
+
+    for city in cache.get_cities().values():
+        key = (normalize_key(str(city.get("name", ""))), normalize_key(str(city.get("admin1code", ""))))
+        coordinate = Coordinate(latitude=float(city["latitude"]), longitude=float(city["longitude"]))
+        population = int(city.get("population") or 0)
+        existing = city_index.get(key)
+        if existing is None or population > existing[0]:
+            city_index[key] = (population, coordinate)
+
+        country_code = str(city.get("countrycode", "")).upper()
+        if country_code == "CA":
+            province_alias = CANADIAN_ADMIN1_TO_PROVINCE.get(normalize_key(str(city.get("admin1code", ""))))
+            if province_alias:
+                alias_key = (normalize_key(str(city.get("name", ""))), province_alias)
+                existing = city_index.get(alias_key)
+                if existing is None or population > existing[0]:
+                    city_index[alias_key] = (population, coordinate)
+
+    return {key: value[1] for key, value in city_index.items()}
+
+
+@lru_cache(maxsize=1)
+def build_state_fallback_lookup() -> dict[str, Coordinate]:
+    cache = geonamescache.GeonamesCache()
+    state_index: dict[str, tuple[int, Coordinate]] = {}
+
+    for city in cache.get_cities().values():
+        state_key = normalize_key(str(city.get("admin1code", "")))
+        population = int(city.get("population") or 0)
+        coordinate = Coordinate(latitude=float(city["latitude"]), longitude=float(city["longitude"]))
+        existing = state_index.get(state_key)
+        if existing is None or population > existing[0]:
+            state_index[state_key] = (population, coordinate)
+
+        country_code = str(city.get("countrycode", "")).upper()
+        if country_code == "CA":
+            province_alias = CANADIAN_ADMIN1_TO_PROVINCE.get(normalize_key(str(city.get("admin1code", ""))))
+            if province_alias:
+                existing = state_index.get(province_alias)
+                if existing is None or population > existing[0]:
+                    state_index[province_alias] = (population, coordinate)
+
+    return {key: value[1] for key, value in state_index.items()}
+
+
+def resolve_station_coordinate(city: str, state: str, address: str, station_name: str) -> Coordinate:
+    city_lookup = build_city_lookup()
+    city_key = (normalize_key(city), normalize_key(state))
+    if city_key in city_lookup:
+        return city_lookup[city_key]
+
+    for (lookup_city, lookup_state), coordinate in city_lookup.items():
+        if lookup_city == normalize_key(city):
+            return coordinate
+
+    state_lookup = build_state_fallback_lookup()
+    state_coordinate = state_lookup.get(normalize_key(state))
+    if state_coordinate is not None:
+        return state_coordinate
+
+    raise RoutePlanningError(f"Could not resolve station location for {station_name}, {city}, {state}")
+
+
+def normalize_text_field(value: str) -> str:
+    return _WHITESPACE_PATTERN.sub(" ", value or "").strip()
+
+
+def normalize_key(value: str) -> str:
+    return normalize_text_field(value).casefold()
 
 
 def fetch_route(start: Coordinate, finish: Coordinate) -> dict:

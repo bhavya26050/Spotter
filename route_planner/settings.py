@@ -60,7 +60,7 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-FUEL_PRICES_CSV = BASE_DIR / "data" / "fuel_prices.csv"
+FUEL_PRICES_CSV = BASE_DIR / "data" / "fuel-prices-for-be-assessment.csv"
 OSRM_BASE_URL = "https://router.project-osrm.org"
 NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org"
 REQUEST_TIMEOUT_SECONDS = 12
