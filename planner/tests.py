@@ -2,11 +2,50 @@ from unittest.mock import patch
 
 from django.test import RequestFactory, SimpleTestCase
 
-from .services import Coordinate, RouteNode, solve_fuel_path
+from .services import (
+    Coordinate,
+    FuelStation,
+    RouteNode,
+    cumulative_route_miles,
+    nearest_route_position,
+    project_onto_segment,
+    solve_fuel_path,
+)
 from .views import RoutePlanView
 
 
 class FuelPlanningTests(SimpleTestCase):
+    def test_project_onto_segment_uses_midpoint_projection(self):
+        route_position, distance = project_onto_segment(
+            point=(5.0, 0.5),
+            segment_start=(0.0, 0.0),
+            segment_end=(10.0, 0.0),
+            segment_start_miles=0.0,
+            segment_length_miles=691.72,
+        )
+
+        self.assertAlmostEqual(route_position, 345.86, places=1)
+        self.assertAlmostEqual(distance, 34.586, places=1)
+
+    def test_nearest_route_position_prefers_closest_segment(self):
+        route_coordinates = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0)]
+        cumulative_miles = cumulative_route_miles(route_coordinates)
+        station = FuelStation(
+            station_id="1",
+            name="Test Station",
+            address="",
+            city="",
+            state="",
+            latitude=10.1,
+            longitude=9.0,
+            price_per_gallon=3.5,
+        )
+
+        route_position, distance = nearest_route_position(route_coordinates, cumulative_miles, station)
+
+        self.assertGreater(route_position, cumulative_miles[1])
+        self.assertLess(distance, 10.0)
+
     def test_solver_prefers_cheaper_reachable_stop(self):
         nodes = [
             RouteNode(

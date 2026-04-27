@@ -268,10 +268,6 @@ def resolve_station_coordinate(city: str, state: str, address: str, station_name
     if city_key in city_lookup:
         return city_lookup[city_key]
 
-    for (lookup_city, lookup_state), coordinate in city_lookup.items():
-        if lookup_city == normalize_key(city):
-            return coordinate
-
     state_lookup = build_state_fallback_lookup()
     state_coordinate = state_lookup.get(normalize_key(state))
     if state_coordinate is not None:
@@ -378,14 +374,58 @@ def nearest_route_position(
     cumulative_miles: list[float],
     station: FuelStation,
 ) -> tuple[float, float]:
-    best_index = 0
+    best_position = 0.0
     best_distance = float("inf")
-    for index, route_point in enumerate(route_coordinates):
-        distance = haversine_miles((route_point[0], route_point[1]), (station.longitude, station.latitude))
-        if distance < best_distance:
-            best_distance = distance
-            best_index = index
-    return cumulative_miles[best_index], best_distance
+
+    for index in range(len(route_coordinates) - 1):
+        start_point = route_coordinates[index]
+        end_point = route_coordinates[index + 1]
+        projected_position, projected_distance = project_onto_segment(
+            point=(station.longitude, station.latitude),
+            segment_start=start_point,
+            segment_end=end_point,
+            segment_start_miles=cumulative_miles[index],
+            segment_length_miles=cumulative_miles[index + 1] - cumulative_miles[index],
+        )
+        if projected_distance < best_distance:
+            best_distance = projected_distance
+            best_position = projected_position
+
+    return best_position, best_distance
+
+
+def project_onto_segment(
+    point: tuple[float, float],
+    segment_start: tuple[float, float],
+    segment_end: tuple[float, float],
+    segment_start_miles: float,
+    segment_length_miles: float,
+) -> tuple[float, float]:
+    point_x, point_y = lon_lat_to_local_miles(point)
+    start_x, start_y = lon_lat_to_local_miles(segment_start)
+    end_x, end_y = lon_lat_to_local_miles(segment_end)
+
+    segment_dx = end_x - start_x
+    segment_dy = end_y - start_y
+    segment_length_squared = segment_dx * segment_dx + segment_dy * segment_dy
+    if segment_length_squared == 0:
+        distance = math.dist((point_x, point_y), (start_x, start_y))
+        return segment_start_miles, distance
+
+    raw_t = ((point_x - start_x) * segment_dx + (point_y - start_y) * segment_dy) / segment_length_squared
+    clamped_t = max(0.0, min(1.0, raw_t))
+    projected_x = start_x + clamped_t * segment_dx
+    projected_y = start_y + clamped_t * segment_dy
+    projected_distance = math.dist((point_x, point_y), (projected_x, projected_y))
+    projected_position_miles = segment_start_miles + clamped_t * segment_length_miles
+    return projected_position_miles, projected_distance
+
+
+def lon_lat_to_local_miles(point: tuple[float, float]) -> tuple[float, float]:
+    longitude, latitude = point
+    miles_per_degree_lat = 69.172
+    miles_per_degree_lon = 69.172 * math.cos(math.radians(latitude))
+    return longitude * miles_per_degree_lon, latitude * miles_per_degree_lat
 
 
 def deduplicate_nodes(nodes: list[RouteNode]) -> list[RouteNode]:
