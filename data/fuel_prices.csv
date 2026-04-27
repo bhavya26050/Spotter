@@ -1,0 +1,40 @@
+station_id,name,city,state,latitude,longitude,price_per_gallon
+ca_la_001,Westside Fuel,Los Angeles,CA,34.0522,-118.2437,4.89
+ca_sd_001,Pacific Pump,San Diego,CA,32.7157,-117.1611,4.79
+ca_sfo_001,Bay Fuel,San Francisco,CA,37.7749,-122.4194,5.09
+ca_sac_001,Capital Fuel,Sacramento,CA,38.5816,-121.4944,4.99
+nv_las_001,Desert Fuel,Las Vegas,NV,36.1699,-115.1398,4.39
+nv_ren_001,High Desert Fuel,Reno,NV,39.5296,-119.8138,4.29
+az_phx_001,Valley Fuel,Phoenix,AZ,33.4484,-112.0740,4.19
+az_tus_001,Sonoran Fuel,Tucson,AZ,32.2226,-110.9747,4.09
+ut_slc_001,Wasatch Fuel,Salt Lake City,UT,40.7608,-111.8910,4.05
+ut_stg_001,Canyon Fuel,St. George,UT,37.0965,-113.5684,4.15
+co_den_001,Front Range Fuel,Denver,CO,39.7392,-104.9903,3.89
+co_cos_001,Peak Fuel,Colorado Springs,CO,38.8339,-104.8214,3.95
+nm_abo_001,High Desert Fuel,Albuquerque,NM,35.0844,-106.6504,3.79
+tx_aus_001,Capital City Fuel,Austin,TX,30.2672,-97.7431,3.29
+tx_dal_001,Metro Fuel,Dallas,TX,32.7767,-96.7970,3.19
+tx_hou_001,Gulf Fuel,Houston,TX,29.7604,-95.3698,3.09
+ok_okc_001,Red River Fuel,Oklahoma City,OK,35.4676,-97.5164,3.15
+ks_kck_001,Plains Fuel,Kansas City,KS,39.0997,-94.5786,3.25
+ne_oma_001,Heartland Fuel,Omaha,NE,41.2565,-95.9345,3.15
+ii_des_001,Corn Belt Fuel,Des Moines,IA,41.5868,-93.6250,3.19
+mn_msp_001,Lakes Fuel,Minneapolis,MN,44.9778,-93.2650,3.29
+mo_stl_001,Gateway Fuel,St. Louis,MO,38.6270,-90.1994,3.35
+il_chi_001,Lakefront Fuel,Chicago,IL,41.8781,-87.6298,3.49
+in_ind_001,Hoosier Fuel,Indianapolis,IN,39.7684,-86.1581,3.39
+oh_cle_001,Erie Fuel,Cleveland,OH,41.4993,-81.6944,3.45
+oh_col_001,Buckeye Fuel,Columbus,OH,39.9612,-82.9988,3.41
+mi_det_001,Motor Fuel,Detroit,MI,42.3314,-83.0458,3.45
+pa_pit_001,Steel City Fuel,Pittsburgh,PA,40.4406,-79.9959,3.49
+dc_wdc_001,Metro Fuel,Washington,DC,38.9072,-77.0369,3.39
+va_rch_001,Capital Belt Fuel,Richmond,VA,37.5407,-77.4360,3.29
+nc_clt_001,Queen City Fuel,Charlotte,NC,35.2271,-80.8431,3.25
+ga_atl_001,Piedmont Fuel,Atlanta,GA,33.7490,-84.3880,3.39
+tn_nsh_001,Music City Fuel,Nashville,TN,36.1627,-86.7816,3.35
+tn_mem_001,Delta Fuel,Memphis,TN,35.1495,-90.0490,3.29
+fl_jax_001,First Coast Fuel,Jacksonville,FL,30.3322,-81.6557,3.29
+fl_orl_001,Lake Fuel,Orlando,FL,28.5383,-81.3792,3.35
+fl_mia_001,Sunshine Fuel,Miami,FL,25.7617,-80.1918,3.49
+ny_nyc_001,Harbor Fuel,New York,NY,40.7128,-74.0060,3.55
+ma_bos_001,Bay State Fuel,Boston,MA,42.3601,-71.0589,3.59

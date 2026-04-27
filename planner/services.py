@@ -1,0 +1,393 @@
+from __future__ import annotations
+
+import csv
+import json
+import math
+import re
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Iterable
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from django.conf import settings
+
+
+class RoutePlanningError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Coordinate:
+    latitude: float
+    longitude: float
+
+
+@dataclass(frozen=True)
+class FuelStation:
+    station_id: str
+    name: str
+    city: str
+    state: str
+    latitude: float
+    longitude: float
+    price_per_gallon: float
+
+
+@dataclass(frozen=True)
+class RouteNode:
+    node_id: str
+    node_type: str
+    label: str
+    coordinate: Coordinate
+    route_position_miles: float
+    price_per_gallon: float | None = None
+    distance_from_route_miles: float = 0.0
+
+
+_COORDINATE_PATTERN = re.compile(r"^\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def plan_route(start: str, finish: str) -> dict:
+    start_coordinate = resolve_location(start)
+    finish_coordinate = resolve_location(finish)
+
+    route = fetch_route(start_coordinate, finish_coordinate)
+    stations = load_fuel_stations()
+    route_nodes = build_route_nodes(route["coordinates"], stations)
+    plan = solve_fuel_path(
+        route_nodes,
+        route["distance_miles"],
+        route["duration_seconds"],
+        route["coordinates"][-1],
+    )
+
+    return {
+        "input": {"start": start, "finish": finish},
+        "start": coordinate_payload(start, start_coordinate),
+        "finish": coordinate_payload(finish, finish_coordinate),
+        "route": {
+            "distance_miles": round(route["distance_miles"], 2),
+            "duration_minutes": round(route["duration_seconds"] / 60, 1),
+            "map": {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": route["coordinates"]},
+                "properties": {
+                    "source": "OpenStreetMap OSRM",
+                    "start": start,
+                    "finish": finish,
+                },
+            },
+        },
+        "fuel_plan": plan["stops"],
+        "summary": {
+            "total_fuel_cost": round(plan["total_cost"], 2),
+            "gallons_purchased": round(plan["total_gallons"], 2),
+            "tank_range_miles": 500,
+            "fuel_efficiency_mpg": 10,
+            "stops_required": len(plan["stops"]),
+        },
+        "assumptions": [
+            "The trip starts with a full tank, so the initial 500 miles do not add trip fuel cost.",
+            "Fuel stops are chosen from the provided price list and projected onto the route polyline.",
+            "Costs are optimized with a forward shortest-path search over feasible stops.",
+        ],
+    }
+
+
+@lru_cache(maxsize=256)
+def resolve_location(value: str) -> Coordinate:
+    coordinate = parse_coordinate(value)
+    if coordinate is not None:
+        return coordinate
+
+    params = {
+        "q": value,
+        "format": "jsonv2",
+        "limit": 1,
+        "countrycodes": "us",
+    }
+    payload = fetch_json(
+        f"{settings.NOMINATIM_BASE_URL}/search?{urlencode(params)}",
+        headers={"User-Agent": "route-planner/1.0"},
+    )
+    if not payload:
+        raise RoutePlanningError(f"Could not geocode location: {value}")
+
+    first = payload[0]
+    return Coordinate(latitude=float(first["lat"]), longitude=float(first["lon"]))
+
+
+def parse_coordinate(value: str) -> Coordinate | None:
+    match = _COORDINATE_PATTERN.match(value)
+    if not match:
+        return None
+    return Coordinate(latitude=float(match.group(1)), longitude=float(match.group(2)))
+
+
+@lru_cache(maxsize=64)
+def load_fuel_stations() -> tuple[FuelStation, ...]:
+    path = Path(settings.FUEL_PRICES_CSV)
+    if not path.exists():
+        raise RoutePlanningError(
+            f"Fuel price file not found at {path}. Provide a CSV with station metadata and prices."
+        )
+
+    stations: list[FuelStation] = []
+    with path.open(newline="", encoding="utf-8") as file_handle:
+        reader = csv.DictReader(file_handle)
+        required_fields = {"station_id", "name", "city", "state", "latitude", "longitude", "price_per_gallon"}
+        missing_fields = required_fields - set(reader.fieldnames or [])
+        if missing_fields:
+            raise RoutePlanningError(
+                f"Fuel price CSV is missing required columns: {', '.join(sorted(missing_fields))}"
+            )
+
+        for row in reader:
+            stations.append(
+                FuelStation(
+                    station_id=row["station_id"].strip(),
+                    name=row["name"].strip(),
+                    city=row["city"].strip(),
+                    state=row["state"].strip(),
+                    latitude=float(row["latitude"]),
+                    longitude=float(row["longitude"]),
+                    price_per_gallon=float(row["price_per_gallon"]),
+                )
+            )
+
+    if not stations:
+        raise RoutePlanningError("Fuel price CSV did not contain any usable rows.")
+
+    return tuple(stations)
+
+
+def fetch_route(start: Coordinate, finish: Coordinate) -> dict:
+    route_url = (
+        f"{settings.OSRM_BASE_URL}/route/v1/driving/"
+        f"{start.longitude},{start.latitude};{finish.longitude},{finish.latitude}"
+        f"?overview=full&geometries=geojson&steps=false&annotations=false"
+    )
+    payload = fetch_json(route_url)
+    routes = payload.get("routes") or []
+    if not routes:
+        raise RoutePlanningError("Routing API did not return a route.")
+
+    route = routes[0]
+    coordinates = [tuple(point) for point in route["geometry"]["coordinates"]]
+    if len(coordinates) < 2:
+        raise RoutePlanningError("Routing API returned an invalid geometry.")
+
+    return {
+        "coordinates": coordinates,
+        "distance_miles": float(route["distance"]) / 1609.344,
+        "duration_seconds": float(route["duration"]),
+    }
+
+
+def fetch_json(url: str, headers: dict[str, str] | None = None) -> dict | list:
+    request = Request(url, headers=headers or {})
+    with urlopen(request, timeout=settings.REQUEST_TIMEOUT_SECONDS) as response:
+        body = response.read().decode("utf-8")
+    return json.loads(body)
+
+
+def coordinate_payload(label: str, coordinate: Coordinate) -> dict:
+    return {
+        "label": label,
+        "latitude": round(coordinate.latitude, 6),
+        "longitude": round(coordinate.longitude, 6),
+    }
+
+
+def build_route_nodes(route_coordinates: list[tuple[float, float]], stations: Iterable[FuelStation]) -> list[RouteNode]:
+    cumulative_miles = cumulative_route_miles(route_coordinates)
+    nodes = [
+        RouteNode(
+            node_id="start",
+            node_type="start",
+            label="Trip start",
+            coordinate=Coordinate(latitude=route_coordinates[0][1], longitude=route_coordinates[0][0]),
+            route_position_miles=0.0,
+            price_per_gallon=0.0,
+            distance_from_route_miles=0.0,
+        ),
+    ]
+
+    for station in stations:
+        route_position, distance_from_route = nearest_route_position(
+            route_coordinates=route_coordinates,
+            cumulative_miles=cumulative_miles,
+            station=station,
+        )
+        # Consider stations that are reasonably near the route. Increase
+        # the threshold so sparse datasets still provide feasible stops.
+        if distance_from_route > 100:
+            continue
+        nodes.append(
+            RouteNode(
+                node_id=station.station_id,
+                node_type="fuel_stop",
+                label=f"{station.name}, {station.city}, {station.state}",
+                coordinate=Coordinate(latitude=station.latitude, longitude=station.longitude),
+                route_position_miles=route_position,
+                price_per_gallon=station.price_per_gallon,
+                distance_from_route_miles=distance_from_route,
+            )
+        )
+
+    nodes = sorted(nodes, key=lambda node: (node.route_position_miles, node.node_type != "start"))
+    return deduplicate_nodes(nodes)
+
+
+def cumulative_route_miles(route_coordinates: list[tuple[float, float]]) -> list[float]:
+    cumulative = [0.0]
+    for index in range(1, len(route_coordinates)):
+        cumulative.append(cumulative[-1] + haversine_miles(route_coordinates[index - 1], route_coordinates[index]))
+    return cumulative
+
+
+def nearest_route_position(
+    route_coordinates: list[tuple[float, float]],
+    cumulative_miles: list[float],
+    station: FuelStation,
+) -> tuple[float, float]:
+    best_index = 0
+    best_distance = float("inf")
+    for index, route_point in enumerate(route_coordinates):
+        distance = haversine_miles((route_point[0], route_point[1]), (station.longitude, station.latitude))
+        if distance < best_distance:
+            best_distance = distance
+            best_index = index
+    return cumulative_miles[best_index], best_distance
+
+
+def deduplicate_nodes(nodes: list[RouteNode]) -> list[RouteNode]:
+    deduplicated: list[RouteNode] = []
+    seen_positions: set[tuple[float, str]] = set()
+    for node in nodes:
+        key = (round(node.route_position_miles, 3), node.node_type)
+        if key in seen_positions:
+            continue
+        seen_positions.add(key)
+        deduplicated.append(node)
+    return deduplicated
+
+
+def solve_fuel_path(
+    nodes: list[RouteNode],
+    route_distance_miles: float,
+    route_duration_seconds: float,
+    finish_coordinate: tuple[float, float],
+) -> dict:
+    reachable_nodes = nodes + [
+        RouteNode(
+            node_id="destination",
+            node_type="finish",
+            label="Trip finish",
+            coordinate=Coordinate(latitude=finish_coordinate[1], longitude=finish_coordinate[0]),
+            route_position_miles=route_distance_miles,
+            price_per_gallon=None,
+            distance_from_route_miles=0.0,
+        )
+    ]
+    reachable_nodes = sorted(reachable_nodes, key=lambda node: node.route_position_miles)
+
+    costs = [float("inf")] * len(reachable_nodes)
+    previous = [-1] * len(reachable_nodes)
+    costs[0] = 0.0
+
+    for index, source in enumerate(reachable_nodes):
+        if costs[index] == float("inf"):
+            continue
+        for next_index in range(index + 1, len(reachable_nodes)):
+            destination = reachable_nodes[next_index]
+            leg_distance = destination.route_position_miles - source.route_position_miles
+            if leg_distance > 500:
+                break
+            edge_cost = 0.0
+            if source.node_type != "start":
+                edge_cost = (leg_distance / 10.0) * float(source.price_per_gallon or 0.0)
+            new_cost = costs[index] + edge_cost
+            if new_cost < costs[next_index]:
+                costs[next_index] = new_cost
+                previous[next_index] = index
+
+    destination_index = len(reachable_nodes) - 1
+    if costs[destination_index] == float("inf"):
+        raise RoutePlanningError(
+            "Unable to build a feasible fuel plan with the provided fuel stations and 500 mile range."
+        )
+
+    path_indexes = reconstruct_path(previous, destination_index)
+    stops = build_stop_details(reachable_nodes, path_indexes)
+
+    total_gallons = sum(stop["gallons_purchased"] for stop in stops)
+    total_cost = costs[destination_index]
+
+    return {
+        "stops": stops,
+        "total_gallons": total_gallons,
+        "total_cost": total_cost,
+        "duration_seconds": route_duration_seconds,
+    }
+
+
+def reconstruct_path(previous: list[int], destination_index: int) -> list[int]:
+    path = []
+    current = destination_index
+    while current != -1:
+        path.append(current)
+        current = previous[current]
+    return list(reversed(path))
+
+
+def build_stop_details(nodes: list[RouteNode], path_indexes: list[int]) -> list[dict]:
+    stops: list[dict] = []
+    for position, node_index in enumerate(path_indexes[:-1]):
+        source = nodes[node_index]
+        destination = nodes[path_indexes[position + 1]]
+        if source.node_type == "start":
+            continue
+
+        leg_distance = destination.route_position_miles - source.route_position_miles
+        gallons = leg_distance / 10.0
+        cost = gallons * float(source.price_per_gallon or 0.0)
+        stops.append(
+            {
+                "sequence": len(stops) + 1,
+                "station": {
+                    "station_id": source.node_id,
+                    "name": source.label,
+                    "latitude": round(source.coordinate.latitude, 6),
+                    "longitude": round(source.coordinate.longitude, 6),
+                    "distance_from_route_miles": round(source.distance_from_route_miles, 2),
+                    "route_position_miles": round(source.route_position_miles, 2),
+                    "price_per_gallon": round(float(source.price_per_gallon or 0.0), 3),
+                },
+                "next_leg": {
+                    "destination": destination.label,
+                    "distance_miles": round(leg_distance, 2),
+                    "gallons_needed": round(gallons, 2),
+                },
+                "gallons_purchased": round(gallons, 2),
+                "cost": round(cost, 2),
+            }
+        )
+    return stops
+
+
+def haversine_miles(point_a: tuple[float, float], point_b: tuple[float, float]) -> float:
+    longitude_a, latitude_a = point_a
+    longitude_b, latitude_b = point_b
+    radius_miles = 3958.7613
+    delta_latitude = math.radians(latitude_b - latitude_a)
+    delta_longitude = math.radians(longitude_b - longitude_a)
+    latitude_a = math.radians(latitude_a)
+    latitude_b = math.radians(latitude_b)
+    haversine = (
+        math.sin(delta_latitude / 2) ** 2
+        + math.cos(latitude_a) * math.cos(latitude_b) * math.sin(delta_longitude / 2) ** 2
+    )
+    return 2 * radius_miles * math.asin(math.sqrt(haversine))
